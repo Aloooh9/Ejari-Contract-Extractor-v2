@@ -2,6 +2,7 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
+import io
 
 def extract_info_from_text(text):
     data = {
@@ -23,7 +24,7 @@ def extract_info_from_text(text):
     eid_match = re.search(r'Emirates ID[^\d]*(\d{15})', text, re.IGNORECASE)
     dewa_match = re.search(r'(?:DEWA Premise No.*?|رقم ديوا)[^\d]*(\d{9,})', text, re.IGNORECASE)
 
-    # Fallbacks in case page 1 format varies from page 2
+    # Fallbacks
     if not amount_match:
         amount_match = re.search(r'Contract Value AED\s*([\d,.]+)', text, re.IGNORECASE)
 
@@ -37,10 +38,10 @@ def extract_info_from_text(text):
 
     return data
 
-def process_pdf(file):
+def process_pdf(file_bytes):
     full_text = ""
-    # Open the uploaded PDF directly from memory
-    with pdfplumber.open(file) as pdf:
+    # Wrap bytes in io.BytesIO for safe reading in memory
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
             extracted = page.extract_text()
             if extracted:
@@ -48,9 +49,12 @@ def process_pdf(file):
     return extract_info_from_text(full_text)
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Tenancy Contract Extractor V2(scanned pdf)", layout="wide")
+st.set_page_config(page_title="Tenancy Contract Extractor", layout="wide")
 st.title("📄 Tenancy Contract Data Extractor")
-st.write("Upload your EJARI PDF contracts. The app will extract the required fields and generate a downloadable table.")
+
+# 1. Initialize session state to hold the data across refreshes
+if 'extracted_data' not in st.session_state:
+    st.session_state.extracted_data = None
 
 uploaded_files = st.file_uploader("Upload PDF Contracts", type="pdf", accept_multiple_files=True)
 
@@ -60,25 +64,31 @@ if uploaded_files:
         
         with st.spinner(f'Processing {len(uploaded_files)} files...'):
             for file in uploaded_files:
-                info = process_pdf(file)
-                info["Filename"] = file.name
-                results.append(info)
+                try:
+                    # 2. Extract the raw bytes from Streamlit's uploaded file object
+                    file_bytes = file.getvalue()
+                    info = process_pdf(file_bytes)
+                    info["Filename"] = file.name
+                    results.append(info)
+                except Exception as e:
+                    st.error(f"Error reading {file.name}: {e}")
         
-        # Convert to Pandas DataFrame
-        df = pd.DataFrame(results)
-        
-        # Reorder columns to put Filename first
-        cols = ["Filename", "Property No", "Start Date", "End Date", "Actual Contract Amount", "Tenant Name", "Emirates ID", "DEWA Premise No"]
-        df = df[cols]
-        
-        st.success("Extraction Complete!")
-        st.dataframe(df, use_container_width=True)
-        
-        # CSV Download functionality
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Data as CSV",
-            data=csv,
-            file_name='extracted_contracts.csv',
-            mime='text/csv',
-        )
+        if results:
+            df = pd.DataFrame(results)
+            cols = ["Filename", "Property No", "Start Date", "End Date", "Actual Contract Amount", "Tenant Name", "Emirates ID", "DEWA Premise No"]
+            
+            # 3. Save the dataframe to session state
+            st.session_state.extracted_data = df[cols]
+
+# 4. Display the data OUTSIDE the button click block
+if st.session_state.extracted_data is not None:
+    st.success("Extraction Complete!")
+    st.dataframe(st.session_state.extracted_data, use_container_width=True)
+    
+    csv = st.session_state.extracted_data.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Data as CSV",
+        data=csv,
+        file_name='extracted_contracts.csv',
+        mime='text/csv',
+    )

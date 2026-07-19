@@ -1,8 +1,9 @@
 version: '3.8'
+
 services:
-  ejari-extractor:
+  ejari-parser:
     build: .
+    container_name: ejari-parser
     ports:
       - "8502:8502"
-    container_name: ejari-extractor-v2
     restart: unless-stopped

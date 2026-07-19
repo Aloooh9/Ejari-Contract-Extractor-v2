@@ -9,5 +9,5 @@ COPY app.py .
 
 EXPOSE 8502
 
-# Added flags to stabilize the WebSocket connection in Docker
-CMD ["streamlit", "run", "app.py", "--server.port=8502", "--server.address=0.0.0.0", "--server.enableCORS=false", "--server.enableWebsocketCompression=false"]
+# Added XsrfProtection flag to allow form submissions from localhost to the Docker container
+CMD ["streamlit", "run", "app.py", "--server.port=8502", "--server.address=0.0.0.0", "--server.enableCORS=false", "--server.enableXsrfProtection=false", "--server.maxUploadSize=500"]

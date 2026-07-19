@@ -1,5 +1,5 @@
 import streamlit as st
-import pdfplumber
+from pypdf import PdfReader
 import pandas as pd
 import re
 import io
@@ -40,47 +40,49 @@ def extract_info_from_text(text):
 
 def process_pdf(file_bytes):
     full_text = ""
-    # Wrap bytes in io.BytesIO for safe reading in memory
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page in pdf.pages:
-            extracted = page.extract_text()
-            if extracted:
-                full_text += extracted + "\n"
+    # Use pypdf which is much lighter on memory
+    reader = PdfReader(io.BytesIO(file_bytes))
+    for page in reader.pages:
+        extracted = page.extract_text()
+        if extracted:
+            full_text += extracted + "\n"
+            
     return extract_info_from_text(full_text)
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Tenancy Contract Extractor", layout="wide")
 st.title("📄 Tenancy Contract Data Extractor")
 
-# 1. Initialize session state to hold the data across refreshes
+# Initialize session state 
 if 'extracted_data' not in st.session_state:
     st.session_state.extracted_data = None
 
-uploaded_files = st.file_uploader("Upload PDF Contracts", type="pdf", accept_multiple_files=True)
+# Using st.form prevents premature reruns while interacting with the uploader
+with st.form("extractor_form"):
+    uploaded_files = st.file_uploader("Upload PDF Contracts", type="pdf", accept_multiple_files=True)
+    submit_button = st.form_submit_button("Extract Information", type="primary")
 
-if uploaded_files:
-    if st.button("Extract Information", type="primary"):
-        results = []
+if submit_button and uploaded_files:
+    results = []
+    
+    with st.spinner(f'Processing {len(uploaded_files)} files...'):
+        for file in uploaded_files:
+            try:
+                file_bytes = file.getvalue()
+                info = process_pdf(file_bytes)
+                info["Filename"] = file.name
+                results.append(info)
+            except Exception as e:
+                st.error(f"Error reading {file.name}: {e}")
+    
+    if results:
+        df = pd.DataFrame(results)
+        cols = ["Filename", "Property No", "Start Date", "End Date", "Actual Contract Amount", "Tenant Name", "Emirates ID", "DEWA Premise No"]
         
-        with st.spinner(f'Processing {len(uploaded_files)} files...'):
-            for file in uploaded_files:
-                try:
-                    # 2. Extract the raw bytes from Streamlit's uploaded file object
-                    file_bytes = file.getvalue()
-                    info = process_pdf(file_bytes)
-                    info["Filename"] = file.name
-                    results.append(info)
-                except Exception as e:
-                    st.error(f"Error reading {file.name}: {e}")
-        
-        if results:
-            df = pd.DataFrame(results)
-            cols = ["Filename", "Property No", "Start Date", "End Date", "Actual Contract Amount", "Tenant Name", "Emirates ID", "DEWA Premise No"]
-            
-            # 3. Save the dataframe to session state
-            st.session_state.extracted_data = df[cols]
+        # Save dataframe to session state
+        st.session_state.extracted_data = df[cols]
 
-# 4. Display the data OUTSIDE the button click block
+# Display the data OUTSIDE the form logic
 if st.session_state.extracted_data is not None:
     st.success("Extraction Complete!")
     st.dataframe(st.session_state.extracted_data, use_container_width=True)

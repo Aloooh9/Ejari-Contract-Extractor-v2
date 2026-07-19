@@ -9,4 +9,5 @@ COPY main.py .
 
 EXPOSE 8502
 
-CMD ["uvicorn", "main.py:app", "--host", "0.0.0.0", "--port", "8502"]
+# The fix: changed "main.py:app" to "main:app"
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8502"]

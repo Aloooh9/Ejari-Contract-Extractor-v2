@@ -2,73 +2,76 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
+import pytesseract
+from pdf2image import convert_from_bytes
+import io
 
 st.set_page_config(page_title="Ejari Data Extractor", layout="wide")
 
 def extract_rental_data(pdf_file):
     full_text = ""
-    table_cells = []
+    pdf_bytes = pdf_file.getvalue()
     
     try:
-        with pdfplumber.open(pdf_file) as pdf:
+        # Step 1: Try standard pdfplumber extraction first
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                # 1. Extract standard text
                 txt = page.extract_text(layout=False)
                 if txt:
                     full_text += txt + "\n"
-                
-                # 2. Extract structured table rows/cells explicitly
                 tables = page.extract_tables()
                 for table in tables:
                     for row in table:
                         for cell in row:
                             if cell:
-                                cleaned_cell = str(cell).strip().replace("\n", " ")
-                                table_cells.append(cleaned_cell)
-                                full_text += cleaned_cell + "\n"
-                                
-    except Exception as e:
-        return {"Filename": pdf_file.name, "Error": f"Could not read PDF: {str(e)}"}
+                                full_text += str(cell).strip() + " "
+    except Exception:
+        pass
 
-    # Normalize text stream
+    # Step 2: If key data is missing or text is sparse, fallback to OCR automatically
+    if "Start Date" not in full_text or "Actual Contract Amount" not in full_text or re.search(r'\b\d{1,4}-[A-Z0-9]+\b', full_text) is None:
+        try:
+            images = convert_from_bytes(pdf_bytes)
+            ocr_text = ""
+            for img in images:
+                ocr_text += pytesseract.image_to_string(img) + "\n"
+            if ocr_text.strip():
+                full_text += "\n" + ocr_text
+        except Exception as e:
+            print(f"OCR Error: {e}")
+
+    # Clean up text stream
     clean_corpus = re.sub(r'[\|\r]+', ' ', full_text)
     clean_corpus = re.sub(r'[ \t]+', ' ', clean_corpus)
 
     # --- FIELD EXTRACTION LOGIC ---
 
-    # 1. Property / Unit No (Targeting explicit table cell patterns like 205-5, 205-6)
+    # 1. Property / Unit No (Handles 205-5, 205-6, etc.)
     prop_no = "N/A"
-    # Search specifically inside isolated table cells first
-    for i, cell in enumerate(table_cells):
-        if re.search(r'(?:Property No|Unit No|رقم العقار)', cell, re.IGNORECASE):
-            # The value is usually in the next cell or row index
-            if i + 1 < len(table_cells):
-                candidate = table_cells[i + 1]
-                if re.match(r'^[A-Z0-9]+(-[A-Z0-9]+)+$', candidate):
-                    prop_no = candidate
-                    break
-    
-    # Fallback pattern match in full text stream if table cell scan misses it
-    if prop_no == "N/A":
-        unit_match = re.search(r'\b(\d{1,4}-[A-Z0-9]+)\b', clean_corpus)
-        if unit_match:
-            prop_no = unit_match.group(1)
+    unit_match = re.search(r'(?:Property No\.?\s*(?:\(s\))?|Unit No\.?\s*(?:\(s\))?|رقم العقار|Leased Unit)[:\s]*([A-Z0-9]+-[A-Z0-9\-]+)', clean_corpus, re.IGNORECASE)
+    if unit_match:
+        prop_no = unit_match.group(1).strip()
+    else:
+        # General fallback looking for standard unit string formats
+        all_units = re.findall(r'\b(\d{1,4}-[A-Z0-9]+)\b', clean_corpus)
+        if all_units:
+            prop_no = all_units[0]
 
     # 2. Start Date
     start_date = "N/A"
-    start_match = re.search(r'Start Date[:\s]*([\d]{2}-[\d]{2}-[\d]{4})', clean_corpus, re.IGNORECASE)
+    start_match = re.search(r'(?:Start Date|تاريخ البدء)[:\s]*([\d]{2}-[\d]{2}-[\d]{4})', clean_corpus, re.IGNORECASE)
     if start_match:
         start_date = start_match.group(1)
 
     # 3. End Date
     end_date = "N/A"
-    end_match = re.search(r'End Date[:\s]*([\d]{2}-[\d]{2}-[\d]{4})', clean_corpus, re.IGNORECASE)
+    end_match = re.search(r'(?:End Date|تاريخ الإنتهاء)[:\s]*([\d]{2}-[\d]{2}-[\d]{4})', clean_corpus, re.IGNORECASE)
     if end_match:
         end_date = end_match.group(1)
 
-    # 4. Actual Contract Amount (handles standard AED and Unicode Greek Alpha 'ΑED')
+    # 4. Actual Contract Amount (Handles standard AED and Greek Alpha 'ΑED')
     contract_amount = "N/A"
-    amount_match = re.search(r'Actual Contract Amount[:\s]*([\d,]+\.\d{2})', clean_corpus, re.IGNORECASE)
+    amount_match = re.search(r'(?:Actual Contract Amount|المبلغ الفعلي العقد)[:\s]*([\d,]+\.\d{2})', clean_corpus, re.IGNORECASE)
     if not amount_match:
         amount_match = re.search(r'([\d,]+\.\d{2})\s*(?:AED|ΑED)', clean_corpus, re.IGNORECASE)
     
@@ -102,7 +105,7 @@ uploaded_files = st.file_uploader("Upload PDF Files", type="pdf", accept_multipl
 
 if uploaded_files:
     if st.button("Extract Data"):
-        with st.spinner(f"Processing {len(uploaded_files)} files..."):
+        with st.spinner(f"Processing {len(uploaded_files)} files with OCR fallback..."):
             results = []
             for pdf_file in uploaded_files:
                 data = extract_rental_data(pdf_file)

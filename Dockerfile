@@ -1,13 +1,11 @@
-# Use a lightweight Debian-based Python image
-FROM python:3.11-slim-bullseye
+# Use a modern stable Python image to avoid deprecated mirror 404 errors
+FROM python:3.11-slim
 
 # Set the working directory
 WORKDIR /app
 
-# Fix apt-get mirror robustness and install system dependencies
-RUN apt-get clean && \
-    apt-get update -o Acquire::Check-Valid-Until=false && \
-    apt-get install -y --no-install-recommends \
+# Install system dependencies required for PDF processing and OCR
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpoppler-cpp-dev \
     pkg-config \
@@ -23,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 
 # Expose Streamlit's default port
-EXPOSE 8502
+EXPOSE 8501
 
 # Run the application
-CMD ["streamlit", "run", "app.py", "--server.port=8502", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]

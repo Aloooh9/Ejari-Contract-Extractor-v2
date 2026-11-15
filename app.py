@@ -8,7 +8,6 @@ st.set_page_config(page_title="Ejari Data Extractor", layout="wide")
 def extract_rental_data(pdf_file):
     text = ""
     try:
-        # Extract text from all pages
         with pdfplumber.open(pdf_file) as pdf:
             for page in pdf.pages:
                 extracted = page.extract_text()
@@ -17,38 +16,61 @@ def extract_rental_data(pdf_file):
     except Exception as e:
         return {"Filename": pdf_file.name, "Error": f"Could not read PDF: {str(e)}"}
 
-    # --- ROBUST REGEX PATTERNS (Supporting Old & New Formats) ---
+    # Clean up excessive whitespace/pipes for easier matching
+    cleaned_text = re.sub(r'[\|\r]', ' ', text)
 
-    # 1. Property / Unit No (Handles standard labels and new tabular layouts)
-    prop_no_match = re.search(r'(?:Property No\.(?:s)?|Unit No(?:\.\(s\))?|رقم العقار).*?\n\s*([A-Z0-9\-]+)', text, re.IGNORECASE)
-    if not prop_no_match:
-        # Fallback for new table structure where unit numbers appear right above property types
-        prop_no_match = re.search(r'((?:[A-Z0-9]+\-)?[A-Z0-9]+)\s*\n\s*(?:Office|Shop|Apartment|Residential|Commercial)', text, re.IGNORECASE)
-
-    # 2. Start Date & End Date (Tolerates spaces, newlines, and table pipes)
-    start_date_match = re.search(r'Start Date[\s\n\|]*([\d]{2}-[\d]{2}-[\d]{4})', text, re.IGNORECASE)
-    end_date_match = re.search(r'End Date[\s\n\|]*([\d]{2}-[\d]{2}-[\d]{4})', text, re.IGNORECASE)
-
-    # 3. Actual Contract Amount (Handles standard 'AED' and Unicode Greek 'Α' variants)
-    contract_amount_match = re.search(r'Actual Contract Amount[\s\n\|]*([\d,]+\.\d{2})\s*[A-ZΑ-Ωa-zα-ω]+', text, re.IGNORECASE)
-    if not contract_amount_match:
-        contract_amount_match = re.search(r'([\d,]+\.\d{2})\s*AED', text, re.IGNORECASE)
-
-    # 4. Emirates ID or Corporate Tenant Number Fallback
-    emirates_id_match = re.search(r'Emirates ID[\s\n\|]*(\d{15})', text, re.IGNORECASE)
-    if not emirates_id_match:
-        tenant_no_match = re.search(r'(?:Tenant No|رقم المستأجر)[\s\n\|]*([A-Z0-9]+)', text, re.IGNORECASE)
-        tenant_identifier = tenant_no_match.group(1) if tenant_no_match else "N/A (Company/Not Found)"
+    # 1. Property / Unit No Extraction
+    prop_no = "N/A"
+    # Try explicit labels first
+    prop_match = re.search(r'(?:Property No\.?\s*(?:\(s\))?|Unit No\.?\s*(?:\(s\))?|رقم العقار)[:\s]*([A-Z0-9\-]+)', cleaned_text, re.IGNORECASE)
+    if prop_match:
+        prop_no = prop_match.group(1).strip()
     else:
-        tenant_identifier = emirates_id_match.group(1)
+        # Fallback: look for typical unit format (e.g., 205-5 or similar alphanumeric hyphenated codes)
+        unit_fallbacks = re.findall(r'\b([A-Z0-9]+-[A-Z0-9\-]+)\b', cleaned_text)
+        if unit_fallbacks:
+            prop_no = unit_fallbacks[0]
+
+    # 2. Start Date Extraction
+    start_date = "N/A"
+    start_match = re.search(r'Start Date[:\s]*([\d]{2}-[\d]{2}-[\d]{4})', cleaned_text, re.IGNORECASE)
+    if start_match:
+        start_date = start_match.group(1)
+
+    # 3. End Date Extraction
+    end_date = "N/A"
+    end_match = re.search(r'End Date[:\s]*([\d]{2}-[\d]{2}-[\d]{4})', cleaned_text, re.IGNORECASE)
+    if end_match:
+        end_date = end_match.group(1)
+
+    # 4. Actual Contract Amount Extraction (handles standard AED and Greek Alpha variant 'ΑED')
+    contract_amount = "N/A"
+    amount_match = re.search(r'Actual Contract Amount[:\s]*([\d,]+\.\d{2})\s*[A-ZΑ-Ωa-zα-ω]*', cleaned_text, re.IGNORECASE)
+    if amount_match:
+        contract_amount = f"{amount_match.group(1)} AED"
+    else:
+        # General fallback for any currency amount ending in AED
+        general_amount = re.search(r'([\d,]+\.\d{2})\s*(?:AED|ΑED)', cleaned_text, re.IGNORECASE)
+        if general_amount:
+            contract_amount = f"{general_amount.group(1)} AED"
+
+    # 5. Emirates ID or Tenant Number / License No
+    tenant_id = "N/A (Company/Not Found)"
+    eid_match = re.search(r'Emirates ID[:\s]*(\d{15})', cleaned_text, re.IGNORECASE)
+    if eid_match:
+        tenant_id = eid_match.group(1)
+    else:
+        tenant_no_match = re.search(r'(?:Tenant No|رقم المستأجر)[:\s]*([A-Z0-9]+)', cleaned_text, re.IGNORECASE)
+        if tenant_no_match:
+            tenant_id = tenant_no_match.group(1)
 
     return {
         "Filename": pdf_file.name,
-        "Property/Unit No": prop_no_match.group(1) if prop_no_match else "N/A",
-        "Start Date": start_date_match.group(1) if start_date_match else "N/A",
-        "End Date": end_date_match.group(1) if end_date_match else "N/A",
-        "Actual Contract Amount": f"{contract_amount_match.group(1)} AED" if contract_amount_match else "N/A",
-        "Emirates ID / Tenant No": tenant_identifier
+        "Property/Unit No": prop_no,
+        "Start Date": start_date,
+        "End Date": end_date,
+        "Actual Contract Amount": contract_amount,
+        "Emirates ID / Tenant No": tenant_id
     }
 
 # --- Web App UI ---
@@ -65,17 +87,14 @@ if uploaded_files:
                 data = extract_rental_data(pdf_file)
                 results.append(data)
             
-            # Convert results to a DataFrame
             df = pd.DataFrame(results)
-            
             st.success("Extraction Complete!")
             st.dataframe(df, use_container_width=True)
             
-            # Convert DF to CSV for download
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 Download Results as CSV",
                 data=csv,
                 file_name="extracted_rental_data.csv",
-                mime="text/csv",
+                mime="text/css" if False else "text/csv",
             )

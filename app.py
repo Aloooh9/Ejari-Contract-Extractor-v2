@@ -6,94 +6,84 @@ import re
 st.set_page_config(page_title="Ejari Data Extractor", layout="wide")
 
 def extract_rental_data(pdf_file):
+    full_text = ""
+    table_cells = []
+    
     try:
         with pdfplumber.open(pdf_file) as pdf:
-            all_words = []
-            full_text = ""
             for page in pdf.pages:
-                # Extract words with positional bounding boxes (x0, top, x1, bottom)
-                words = page.extract_words()
-                if words:
-                    all_words.extend(words)
-                
-                # Raw text fallback
-                txt = page.extract_text()
+                # 1. Extract standard text
+                txt = page.extract_text(layout=False)
                 if txt:
                     full_text += txt + "\n"
-                    
+                
+                # 2. Extract structured table rows/cells explicitly
+                tables = page.extract_tables()
+                for table in tables:
+                    for row in table:
+                        for cell in row:
+                            if cell:
+                                cleaned_cell = str(cell).strip().replace("\n", " ")
+                                table_cells.append(cleaned_cell)
+                                full_text += cleaned_cell + "\n"
+                                
     except Exception as e:
         return {"Filename": pdf_file.name, "Error": f"Could not read PDF: {str(e)}"}
 
-    # Sort words spatially: top coordinate first, then left (x0) coordinate
-    all_words = sorted(all_words, key=lambda w: (round(w['top'], 1), w['x0']))
-    
-    # Rebuild a clean, continuous text stream from sorted words
-    reconstructed_text = " ".join([w['text'] for w in all_words])
-    
-    # Combine with raw text to ensure maximum coverage
-    combined_corpus = reconstructed_text + "\n" + full_text
-    clean_corpus = re.sub(r'[\|\r]+', ' ', combined_corpus)
+    # Normalize text stream
+    clean_corpus = re.sub(r'[\|\r]+', ' ', full_text)
     clean_corpus = re.sub(r'[ \t]+', ' ', clean_corpus)
 
-    # Helper function to find text following specific keywords dynamically
-    def get_val_after_keyword(keywords, pattern, text):
-        for kw in keywords:
-            # Look for keyword followed by anything up to our target regex pattern
-            regex = re.escape(kw) + r'[\s\:\-\|]*(' + pattern + ')'
-            match = re.search(regex, text, re.IGNORECASE)
-            if match:
-                val = match.group(1).strip()
-                if val:
-                    return val
-        return None
+    # --- FIELD EXTRACTION LOGIC ---
 
-    # 1. Property / Unit Number Extraction
-    prop_no = get_val_after_keyword(
-        ["Property No", "Property Nos", "Unit No", "Leased Unit", "رقم العقار"],
-        r'[A-Z0-9]+-[A-Z0-9\-]+', 
-        clean_corpus
-    )
-    if not prop_no:
-        # Fallback search for common format like 205-5, 205-6 anywhere in text
+    # 1. Property / Unit No (Targeting explicit table cell patterns like 205-5, 205-6)
+    prop_no = "N/A"
+    # Search specifically inside isolated table cells first
+    for i, cell in enumerate(table_cells):
+        if re.search(r'(?:Property No|Unit No|رقم العقار)', cell, re.IGNORECASE):
+            # The value is usually in the next cell or row index
+            if i + 1 < len(table_cells):
+                candidate = table_cells[i + 1]
+                if re.match(r'^[A-Z0-9]+(-[A-Z0-9]+)+$', candidate):
+                    prop_no = candidate
+                    break
+    
+    # Fallback pattern match in full text stream if table cell scan misses it
+    if prop_no == "N/A":
         unit_match = re.search(r'\b(\d{1,4}-[A-Z0-9]+)\b', clean_corpus)
-        prop_no = unit_match.group(1) if unit_match else "N/A"
+        if unit_match:
+            prop_no = unit_match.group(1)
 
-    # 2. Start Date Extraction
-    start_date = get_val_after_keyword(
-        ["Start Date", "تاريخ البدء"],
-        r'[\d]{2}-[\d]{2}-[\d]{4}', 
-        clean_corpus
-    ) or "N/A"
+    # 2. Start Date
+    start_date = "N/A"
+    start_match = re.search(r'Start Date[:\s]*([\d]{2}-[\d]{2}-[\d]{4})', clean_corpus, re.IGNORECASE)
+    if start_match:
+        start_date = start_match.group(1)
 
-    # 3. End Date Extraction
-    end_date = get_val_after_keyword(
-        ["End Date", "تاريخ الإنتهاء"],
-        r'[\d]{2}-[\d]{2}-[\d]{4}', 
-        clean_corpus
-    ) or "N/A"
+    # 3. End Date
+    end_date = "N/A"
+    end_match = re.search(r'End Date[:\s]*([\d]{2}-[\d]{2}-[\d]{4})', clean_corpus, re.IGNORECASE)
+    if end_match:
+        end_date = end_match.group(1)
 
-    # 4. Actual Contract Amount (Handles standard AED and Unicode Greek Alpha 'ΑED')
-    contract_amount = get_val_after_keyword(
-        ["Actual Contract Amount", "المبلغ الفعلي العقد"],
-        r'[\d,]+\.\d{2}', 
-        clean_corpus
-    )
-    if contract_amount:
-        contract_amount = f"{contract_amount} AED"
-    else:
-        # General currency pattern fallback
-        amt_match = re.search(r'([\d,]+\.\d{2})\s*(?:AED|ΑED)', clean_corpus, re.IGNORECASE)
-        contract_amount = f"{amt_match.group(1)} AED" if amt_match else "N/A"
+    # 4. Actual Contract Amount (handles standard AED and Unicode Greek Alpha 'ΑED')
+    contract_amount = "N/A"
+    amount_match = re.search(r'Actual Contract Amount[:\s]*([\d,]+\.\d{2})', clean_corpus, re.IGNORECASE)
+    if not amount_match:
+        amount_match = re.search(r'([\d,]+\.\d{2})\s*(?:AED|ΑED)', clean_corpus, re.IGNORECASE)
+    
+    if amount_match:
+        contract_amount = f"{amount_match.group(1)} AED"
 
     # 5. Emirates ID or Corporate Tenant Number
-    tenant_id = get_val_after_keyword(
-        ["Emirates ID", "Tenant No", "رقم المستأجر"],
-        r'\d{5,15}', 
-        clean_corpus
-    )
-    if not tenant_id:
-        comp_match = re.search(r'(?:Tenant No|رقم المستأجر)[\s\:\-\|]*([A-Z0-9\-]+)', clean_corpus, re.IGNORECASE)
-        tenant_id = comp_match.group(1) if comp_match else "N/A (Company/Not Found)"
+    tenant_id = "N/A (Company/Not Found)"
+    eid_match = re.search(r'Emirates ID[:\s]*(\d{15})', clean_corpus, re.IGNORECASE)
+    if eid_match:
+        tenant_id = eid_match.group(1)
+    else:
+        tenant_no_match = re.search(r'(?:Tenant No|رقم المستأجر)[:\s]*([A-Z0-9]{5,15})', clean_corpus, re.IGNORECASE)
+        if tenant_no_match:
+            tenant_id = tenant_no_match.group(1)
 
     return {
         "Filename": pdf_file.name,

@@ -1,9 +1,16 @@
 version: '3.8'
 
 services:
-  ejari-parser:
-    build: .
-    container_name: ejari-parser
+  ejari-extractor:
+    container_name: ejari-extractor-v2
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8502:8502"
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

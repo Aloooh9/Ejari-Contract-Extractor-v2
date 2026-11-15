@@ -4,8 +4,10 @@ FROM python:3.11-slim-bullseye
 # Set the working directory
 WORKDIR /app
 
-# Install system dependencies required for PDF processing and OCR
-RUN apt-get update && apt-get install -y \
+# Fix apt-get mirror robustness and install system dependencies
+RUN apt-get clean && \
+    apt-get update -o Acquire::Check-Valid-Until=false && \
+    apt-get install -y --no-install-recommends \
     build-essential \
     libpoppler-cpp-dev \
     pkg-config \
